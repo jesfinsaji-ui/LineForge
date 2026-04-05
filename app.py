@@ -1,5 +1,5 @@
 """
-DRAWING MACHINE — Streamlit Web App  (Login + Signup via GitHub JSON)
+LineForge — Streamlit Web App  (Login + Signup via GitHub JSON)
 Image → Grayscale → Edges → Contours → G-code → Preview
 
 SETUP:
@@ -42,7 +42,6 @@ def hash_password(password: str) -> str:
 
 
 def get_users_with_sha():
-    """Return (users_dict, sha_string). sha is None if file is new."""
     r = requests.get(API_BASE, headers=HEADERS)
     if r.status_code == 404:
         return {}, None
@@ -54,7 +53,6 @@ def get_users_with_sha():
 
 
 def save_users(users: dict, sha) -> bool:
-    """Write users.json back to GitHub. sha required for updates."""
     encoded = base64.b64encode(json.dumps(users, indent=2).encode()).decode()
     payload = {"message": "update users.json", "content": encoded}
     if sha:
@@ -72,7 +70,7 @@ if "authenticated" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = ""
 if "page" not in st.session_state:
-    st.session_state.page = "login"   # "login" | "signup"
+    st.session_state.page = "login"
 
 
 # ══════════════════════════════════════════════
@@ -82,7 +80,7 @@ if "page" not in st.session_state:
 if not st.session_state.authenticated:
 
     st.set_page_config(
-        page_title="Drawing Machine — Auth",
+        page_title="LineForge — Auth",
         page_icon="✏️",
         layout="centered",
         initial_sidebar_state="collapsed",
@@ -266,7 +264,7 @@ if not st.session_state.authenticated:
     st.markdown(f"""
     <div class="auth-card">
         <div class="corner-mark">v2.0</div>
-        <div class="auth-logo">DRAWING<span>.</span>MACHINE</div>
+        <div class="auth-logo">LINE<span>.</span>FORGE</div>
         <div class="auth-sub">Image → Contours → G-code</div>
         <div class="tab-row">
             <div class="tab-item {'tab-active' if is_login else 'tab-inactive'}">▸ Login</div>
@@ -281,7 +279,7 @@ if not st.session_state.authenticated:
         password = st.text_input("Password", placeholder="••••••••", type="password", key="li_pass")
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-        if st.button("→  ACCESS MACHINE", key="btn_login"):
+        if st.button("→  ACCESS LINEFORGE", key="btn_login"):
             if not username or not password:
                 st.error("✗  Please fill in all fields.")
             else:
@@ -308,7 +306,6 @@ if not st.session_state.authenticated:
         new_pass  = st.text_input("Password", placeholder="min. 6 characters", type="password", key="su_pass")
         new_pass2 = st.text_input("Confirm Password", placeholder="repeat password", type="password", key="su_pass2")
 
-        # Password strength bar
         if new_pass:
             s = len(new_pass)
             color = "#e05c5c" if s < 6 else "#e8c547" if s < 10 else "#7ec893"
@@ -362,7 +359,7 @@ if not st.session_state.authenticated:
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="footer-note">DRAWING MACHINE · RESTRICTED ACCESS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer-note">LINEFORGE · RESTRICTED ACCESS</div>', unsafe_allow_html=True)
     st.stop()
 
 
@@ -371,11 +368,12 @@ if not st.session_state.authenticated:
 # ══════════════════════════════════════════════
 
 st.set_page_config(
-    page_title="Drawing Machine",
+    page_title="LineForge",
     page_icon="✏️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
 
 # ══════════════════════════════════════════════
 #  CUSTOM CSS
@@ -518,7 +516,7 @@ hr { border-color: var(--border) !important; }
 
 
 # ══════════════════════════════════════════════
-#  IMAGE PROCESSOR
+#  1 — IMAGE PROCESSOR
 # ══════════════════════════════════════════════
 
 class ImageProcessor:
@@ -534,6 +532,10 @@ class ImageProcessor:
     def pil_to_bgr(pil_img):
         return cv2.cvtColor(np.array(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
 
+
+# ══════════════════════════════════════════════
+#  2 — CONTOUR ENGINE
+# ══════════════════════════════════════════════
 
 class ContourEngine:
     def __init__(self, min_points=8):
@@ -561,6 +563,10 @@ class ContourEngine:
         return ordered
 
 
+# ══════════════════════════════════════════════
+#  3 — SCALER
+# ══════════════════════════════════════════════
+
 class Scaler:
     def __init__(self, board_w, board_h, margin=5.0):
         self.board_w = board_w; self.board_h = board_h; self.margin = margin
@@ -571,7 +577,7 @@ class Scaler:
 
     def scale(self, contours, image_shape):
         ih, iw = image_shape[:2]
-        k = min(self.draw_w / iw, self.draw_h / ih)
+        k  = min(self.draw_w / iw, self.draw_h / ih)
         ox = self.margin + (self.draw_w - iw * k) / 2
         oy = self.margin + (self.draw_h - ih * k) / 2
         return [
@@ -580,6 +586,10 @@ class Scaler:
         ]
 
 
+# ══════════════════════════════════════════════
+#  4 — G-CODE GENERATOR
+# ══════════════════════════════════════════════
+
 class GCodeGenerator:
     def __init__(self, feed_rate=1500, z_up=3.0, z_down=0.0):
         self.feed_rate = feed_rate; self.z_up = z_up; self.z_down = z_down
@@ -587,15 +597,17 @@ class GCodeGenerator:
     def generate(self, contours, board_w, board_h):
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         lines = [
-            f"; Generated   : {ts}",
+            f"; LineForge   : {ts}",
             f"; Board       : {board_w} × {board_h} mm",
+            f"; Feed rate   : {self.feed_rate} mm/min",
             f"; Contours    : {len(contours)}",
+            f"; Total pts   : {sum(len(c) for c in contours)}",
             "G21 G90", f"G0 Z{self.z_up:.2f}", "G0 X0.000 Y0.000", "",
         ]
         for i, cnt in enumerate(contours):
             x0, y0 = cnt[0]
             lines += [
-                f"; Contour {i+1}/{len(contours)}",
+                f"; Contour {i+1}/{len(contours)} ({len(cnt)} pts)",
                 f"G0 Z{self.z_up:.2f}", f"G0 X{x0:.3f} Y{y0:.3f}",
                 f"G1 Z{self.z_down:.2f} F{self.feed_rate}",
             ]
@@ -605,6 +617,10 @@ class GCodeGenerator:
         lines += [f"G0 Z{self.z_up:.2f}", "G0 X0.000 Y0.000", "M2"]
         return "\n".join(lines)
 
+
+# ══════════════════════════════════════════════
+#  5 — TOOLPATH RENDERER
+# ══════════════════════════════════════════════
 
 class ToolpathRenderer:
     BG = "#0a0a0a"; STROKE = "#4ecdc4"; TRAVEL = "#2a2a2a"
@@ -664,6 +680,10 @@ class ToolpathRenderer:
             t += dash; on = not on
 
 
+# ══════════════════════════════════════════════
+#  PIPELINE
+# ══════════════════════════════════════════════
+
 def run_pipeline(pil_img, board_w, board_h, margin,
                  feed_rate, z_up, z_down, canny_low, canny_high, min_points):
     bgr      = ImageProcessor.pil_to_bgr(pil_img)
@@ -717,7 +737,7 @@ with st.sidebar:
 
     st.markdown(
         '<p style="font-size:10px;color:#555550;font-family:JetBrains Mono,monospace;">'
-        'DRAWING MACHINE v2.0<br>Image → Contours → G-code</p>',
+        'LINEFORGE v2.0<br>Image → Contours → G-code</p>',
         unsafe_allow_html=True
     )
 
@@ -728,7 +748,7 @@ with st.sidebar:
 
 st.markdown("""
 <div class="title-block">
-    <h1>DRAWING MACHINE</h1>
+    <h1>LINEFORGE</h1>
     <span class="sub">Image → Grayscale → Edges → Contours → G-code</span>
 </div>
 """, unsafe_allow_html=True)
@@ -810,7 +830,7 @@ if uploaded:
                     st.download_button(
                         label="💾  Download G-code",
                         data=gcode,
-                        file_name=f"drawing_{uploaded.name.rsplit('.',1)[0]}.gcode",
+                        file_name=f"lineforge_{uploaded.name.rsplit('.',1)[0]}.gcode",
                         mime="text/plain",
                     )
 
