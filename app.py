@@ -1,6 +1,6 @@
 """
-LineForge — Streamlit Web App  (Login + Signup via GitHub JSON)
-Image → Grayscale → Edges → Contours → G-code → Preview
+LineForge — Streamlit Web App  (Login + Signup + ESP32 Direct Send)
+Image → Grayscale → Edges → Contours → G-code → ESP32
 
 SETUP:
     pip install streamlit opencv-python-headless numpy pillow requests
@@ -62,6 +62,45 @@ def save_users(users: dict, sha) -> bool:
 
 
 # ══════════════════════════════════════════════
+#  ESP32 COMMUNICATION
+# ══════════════════════════════════════════════
+
+def send_gcode_to_esp32(ip: str, gcode: str, port: int = 80, timeout: int = 10):
+    """
+    Send G-code to ESP32 via HTTP POST.
+    ESP32 must be running the companion firmware (esp32_lineforge.ino).
+    Returns (success: bool, message: str)
+    """
+    url = f"http://{ip}:{port}/gcode"
+    try:
+        response = requests.post(
+            url,
+            data=gcode.encode("utf-8"),
+            headers={"Content-Type": "text/plain"},
+            timeout=timeout
+        )
+        if response.status_code == 200:
+            return True, response.text.strip() or "G-code sent successfully."
+        else:
+            return False, f"ESP32 returned HTTP {response.status_code}: {response.text.strip()}"
+    except requests.exceptions.ConnectionError:
+        return False, "Connection refused. Check the IP address and make sure ESP32 is on the same WiFi network."
+    except requests.exceptions.Timeout:
+        return False, f"Connection timed out after {timeout}s. ESP32 may be busy or unreachable."
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def ping_esp32(ip: str, port: int = 80, timeout: int = 4):
+    """Check if ESP32 is reachable by hitting /ping endpoint."""
+    try:
+        r = requests.get(f"http://{ip}:{port}/ping", timeout=timeout)
+        return r.status_code == 200, r.text.strip()
+    except:
+        return False, "Not reachable"
+
+
+# ══════════════════════════════════════════════
 #  SESSION BOOTSTRAP
 # ══════════════════════════════════════════════
 
@@ -71,6 +110,10 @@ if "username" not in st.session_state:
     st.session_state.username = ""
 if "page" not in st.session_state:
     st.session_state.page = "login"
+if "esp32_ip" not in st.session_state:
+    st.session_state.esp32_ip = "192.168.1.100"
+if "esp32_status" not in st.session_state:
+    st.session_state.esp32_status = None   # None | "online" | "offline"
 
 
 # ══════════════════════════════════════════════
@@ -91,15 +134,9 @@ if not st.session_state.authenticated:
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@700;800&display=swap');
 
     :root {
-        --bg: #0c0c0c;
-        --card: #181818;
-        --border: #272727;
-        --accent: #e8c547;
-        --accent2: #4ecdc4;
-        --red: #e05c5c;
-        --green: #7ec893;
-        --text: #e0dfd8;
-        --sub: #555550;
+        --bg: #0c0c0c; --card: #181818; --border: #272727;
+        --accent: #e8c547; --accent2: #4ecdc4; --red: #e05c5c;
+        --green: #7ec893; --text: #e0dfd8; --sub: #555550;
     }
 
     html, body, [data-testid="stAppViewContainer"] {
@@ -123,134 +160,96 @@ if not st.session_state.authenticated:
 
     .auth-logo {
         font-family: 'Syne', sans-serif;
-        font-size: 26px;
-        font-weight: 800;
-        color: var(--text);
-        letter-spacing: -0.02em;
-        margin-bottom: 4px;
+        font-size: 26px; font-weight: 800;
+        color: var(--text); letter-spacing: -0.02em; margin-bottom: 4px;
     }
 
     .auth-logo span { color: var(--accent); }
 
     .auth-sub {
-        font-size: 10px;
-        color: var(--sub);
-        text-transform: uppercase;
-        letter-spacing: 0.15em;
-        margin-bottom: 32px;
+        font-size: 10px; color: var(--sub);
+        text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 32px;
     }
 
     .corner-mark {
-        position: absolute;
-        top: 12px; right: 16px;
-        font-size: 10px;
-        color: var(--sub);
-        letter-spacing: 0.08em;
+        position: absolute; top: 12px; right: 16px;
+        font-size: 10px; color: var(--sub); letter-spacing: 0.08em;
     }
 
     .tab-row {
-        display: flex;
-        border: 1px solid var(--border);
-        border-radius: 2px;
-        overflow: hidden;
-        margin-bottom: 4px;
+        display: flex; border: 1px solid var(--border);
+        border-radius: 2px; overflow: hidden; margin-bottom: 4px;
     }
 
     .tab-item {
-        flex: 1;
-        text-align: center;
-        padding: 10px;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.15em;
-        text-transform: uppercase;
+        flex: 1; text-align: center; padding: 10px;
+        font-size: 10px; font-weight: 700;
+        letter-spacing: 0.15em; text-transform: uppercase;
     }
 
     .tab-active   { background: var(--accent); color: #0c0c0c; }
     .tab-inactive { background: #101010; color: var(--sub); }
 
     .stTextInput > div > div > input {
-        background-color: #101010 !important;
-        color: var(--text) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 2px !important;
+        background-color: #101010 !important; color: var(--text) !important;
+        border: 1px solid var(--border) !important; border-radius: 2px !important;
         font-family: 'JetBrains Mono', monospace !important;
-        font-size: 13px !important;
-        padding: 12px 14px !important;
+        font-size: 13px !important; padding: 12px 14px !important;
     }
 
     .stTextInput > div > div > input:focus {
         border-color: var(--accent) !important;
-        box-shadow: 0 0 0 1px var(--accent) !important;
-        outline: none !important;
+        box-shadow: 0 0 0 1px var(--accent) !important; outline: none !important;
     }
 
     .stTextInput label {
-        font-size: 10px !important;
-        font-weight: 700 !important;
-        color: var(--sub) !important;
-        text-transform: uppercase !important;
+        font-size: 10px !important; font-weight: 700 !important;
+        color: var(--sub) !important; text-transform: uppercase !important;
         letter-spacing: 0.15em !important;
         font-family: 'JetBrains Mono', monospace !important;
     }
 
     .stButton > button {
-        background-color: var(--accent) !important;
-        color: #0c0c0c !important;
-        border: none !important;
-        border-radius: 2px !important;
+        background-color: var(--accent) !important; color: #0c0c0c !important;
+        border: none !important; border-radius: 2px !important;
         font-family: 'JetBrains Mono', monospace !important;
-        font-weight: 700 !important;
-        font-size: 12px !important;
-        letter-spacing: 0.1em !important;
-        padding: 14px 20px !important;
-        width: 100% !important;
-        margin-top: 6px;
-        transition: opacity 0.15s;
+        font-weight: 700 !important; font-size: 12px !important;
+        letter-spacing: 0.1em !important; padding: 14px 20px !important;
+        width: 100% !important; margin-top: 6px; transition: opacity 0.15s;
     }
 
     .stButton > button:hover { opacity: 0.85 !important; }
 
     .switch-btn > button {
-        background-color: transparent !important;
-        color: var(--sub) !important;
+        background-color: transparent !important; color: var(--sub) !important;
         border: 1px solid var(--border) !important;
-        font-size: 11px !important;
-        margin-top: 0 !important;
+        font-size: 11px !important; margin-top: 0 !important;
     }
 
     .switch-btn > button:hover {
         border-color: var(--accent) !important;
-        color: var(--accent) !important;
-        opacity: 1 !important;
+        color: var(--accent) !important; opacity: 1 !important;
     }
 
     [data-testid="stAlert"] {
         border-radius: 2px !important;
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 12px !important;
+        font-family: 'JetBrains Mono', monospace !important; font-size: 12px !important;
     }
 
     .grid-bg {
-        position: fixed;
-        top: 0; left: 0; right: 0; bottom: 0;
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
         background-image:
             linear-gradient(var(--border) 1px, transparent 1px),
             linear-gradient(90deg, var(--border) 1px, transparent 1px);
-        background-size: 40px 40px;
-        opacity: 0.25;
-        pointer-events: none;
-        z-index: 0;
+        background-size: 40px 40px; opacity: 0.25;
+        pointer-events: none; z-index: 0;
     }
 
     .divider { height: 1px; background: var(--border); margin: 16px 0; }
 
     .footer-note {
-        font-size: 10px;
-        color: var(--sub);
-        text-align: center;
-        margin-top: 20px;
-        letter-spacing: 0.08em;
+        font-size: 10px; color: var(--sub); text-align: center;
+        margin-top: 20px; letter-spacing: 0.08em;
         font-family: 'JetBrains Mono', monospace;
     }
     </style>
@@ -273,7 +272,6 @@ if not st.session_state.authenticated:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── LOGIN ─────────────────────────────────
     if is_login:
         username = st.text_input("Username", placeholder="enter username", key="li_user")
         password = st.text_input("Password", placeholder="••••••••", type="password", key="li_pass")
@@ -299,7 +297,6 @@ if not st.session_state.authenticated:
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── SIGN UP ───────────────────────────────
     else:
         new_user  = st.text_input("Choose a Username", placeholder="e.g. jeswin", key="su_user")
         new_email = st.text_input("Email", placeholder="you@example.com", key="su_email")
@@ -364,7 +361,7 @@ if not st.session_state.authenticated:
 
 
 # ══════════════════════════════════════════════
-#  PAGE CONFIG  (only after login)
+#  PAGE CONFIG
 # ══════════════════════════════════════════════
 
 st.set_page_config(
@@ -408,89 +405,77 @@ html, body, [data-testid="stAppViewContainer"] {
 h1, h2, h3 { font-family: 'Syne', sans-serif !important; color: var(--text) !important; }
 
 .stButton > button {
-    background-color: var(--accent) !important;
-    color: #0c0c0c !important;
-    border: none !important;
-    border-radius: 2px !important;
+    background-color: var(--accent) !important; color: #0c0c0c !important;
+    border: none !important; border-radius: 2px !important;
     font-family: 'JetBrains Mono', monospace !important;
-    font-weight: 700 !important;
-    font-size: 13px !important;
-    padding: 10px 20px !important;
-    width: 100%;
-    transition: opacity 0.15s;
+    font-weight: 700 !important; font-size: 13px !important;
+    padding: 10px 20px !important; width: 100%; transition: opacity 0.15s;
 }
 
 .stButton > button:hover { opacity: 0.85; }
 
 .stDownloadButton > button {
-    background-color: #1a2a1a !important;
-    color: var(--accent2) !important;
-    border: 1px solid var(--accent2) !important;
-    border-radius: 2px !important;
+    background-color: #1a2a1a !important; color: var(--accent2) !important;
+    border: 1px solid var(--accent2) !important; border-radius: 2px !important;
     font-family: 'JetBrains Mono', monospace !important;
-    font-weight: 700 !important;
-    width: 100%;
+    font-weight: 700 !important; width: 100%;
 }
 
 .stTextArea textarea, .stNumberInput input {
-    background-color: var(--card) !important;
-    color: var(--text) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 2px !important;
+    background-color: var(--card) !important; color: var(--text) !important;
+    border: 1px solid var(--border) !important; border-radius: 2px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+}
+
+.stTextInput > div > div > input {
+    background-color: var(--card) !important; color: var(--text) !important;
+    border: 1px solid var(--border) !important; border-radius: 2px !important;
+    font-family: 'JetBrains Mono', monospace !important; font-size: 13px !important;
+}
+
+.stTextInput > div > div > input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 1px var(--accent) !important;
+}
+
+.stTextInput label {
+    font-size: 10px !important; font-weight: 700 !important;
+    color: var(--sub) !important; text-transform: uppercase !important;
+    letter-spacing: 0.12em !important;
     font-family: 'JetBrains Mono', monospace !important;
 }
 
 .stat-box {
-    background: var(--card);
-    border: 1px solid var(--border);
+    background: var(--card); border: 1px solid var(--border);
     border-left: 3px solid var(--accent);
-    padding: 12px 16px;
-    border-radius: 2px;
-    margin: 4px 0;
+    padding: 12px 16px; border-radius: 2px; margin: 4px 0;
 }
 
 .stat-box .label { font-size: 10px; color: var(--sub); text-transform: uppercase; letter-spacing: 0.1em; }
 .stat-box .value { font-size: 20px; font-weight: 700; color: var(--accent); font-family: 'Syne', sans-serif; }
 
 .panel-header {
-    background: #0e0e0e;
-    border: 1px solid var(--border);
-    border-bottom: none;
-    padding: 8px 14px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--sub);
+    background: #0e0e0e; border: 1px solid var(--border); border-bottom: none;
+    padding: 8px 14px; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--sub);
 }
 
 .section-label {
     font-size: 10px; font-weight: 700; color: var(--accent);
     text-transform: uppercase; letter-spacing: 0.15em;
-    padding: 12px 0 4px 0;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 8px;
+    padding: 12px 0 4px 0; border-bottom: 1px solid var(--border); margin-bottom: 8px;
 }
 
 .gcode-block {
-    background: #080808;
-    border: 1px solid var(--border);
-    color: var(--gcode);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    padding: 16px;
-    border-radius: 2px;
-    max-height: 420px;
-    overflow-y: auto;
-    white-space: pre;
-    line-height: 1.6;
+    background: #080808; border: 1px solid var(--border);
+    color: var(--gcode); font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; padding: 16px; border-radius: 2px;
+    max-height: 300px; overflow-y: auto; white-space: pre; line-height: 1.6;
 }
 
 .title-block {
     display: flex; align-items: baseline; gap: 16px;
-    padding: 0 0 24px 0;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 24px;
+    padding: 0 0 24px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px;
 }
 
 .title-block h1 { font-size: 32px; margin: 0; padding: 0; }
@@ -508,15 +493,43 @@ hr { border-color: var(--border) !important; }
 
 [data-testid="stFileUploader"] {
     background: var(--card) !important;
-    border: 1px dashed var(--border) !important;
-    border-radius: 2px !important;
+    border: 1px dashed var(--border) !important; border-radius: 2px !important;
 }
+
+/* ESP32 panel */
+.esp32-panel {
+    background: #0d1a0d;
+    border: 1px solid #1a3a1a;
+    border-left: 3px solid var(--accent2);
+    border-radius: 2px;
+    padding: 16px;
+    margin: 8px 0;
+}
+
+.esp32-panel .label {
+    font-size: 10px; color: #4ecdc4; text-transform: uppercase;
+    letter-spacing: 0.15em; font-weight: 700; margin-bottom: 10px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.status-dot-online  { color: #7ec893; font-size: 11px; }
+.status-dot-offline { color: #e05c5c; font-size: 11px; }
+.status-dot-unknown { color: #555550; font-size: 11px; }
+
+.send-btn > button {
+    background: linear-gradient(135deg, #1a3a1a, #0d2a1a) !important;
+    color: var(--accent2) !important;
+    border: 1px solid var(--accent2) !important;
+    font-size: 13px !important;
+}
+
+.send-btn > button:hover { opacity: 0.85 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════
-#  1 — IMAGE PROCESSOR
+#  IMAGE PROCESSOR
 # ══════════════════════════════════════════════
 
 class ImageProcessor:
@@ -532,10 +545,6 @@ class ImageProcessor:
     def pil_to_bgr(pil_img):
         return cv2.cvtColor(np.array(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
 
-
-# ══════════════════════════════════════════════
-#  2 — CONTOUR ENGINE
-# ══════════════════════════════════════════════
 
 class ContourEngine:
     def __init__(self, min_points=8):
@@ -563,10 +572,6 @@ class ContourEngine:
         return ordered
 
 
-# ══════════════════════════════════════════════
-#  3 — SCALER
-# ══════════════════════════════════════════════
-
 class Scaler:
     def __init__(self, board_w, board_h, margin=5.0):
         self.board_w = board_w; self.board_h = board_h; self.margin = margin
@@ -585,10 +590,6 @@ class Scaler:
             for cnt in contours if len(cnt) >= 2
         ]
 
-
-# ══════════════════════════════════════════════
-#  4 — G-CODE GENERATOR
-# ══════════════════════════════════════════════
 
 class GCodeGenerator:
     def __init__(self, feed_rate=1500, z_up=3.0, z_down=0.0):
@@ -617,10 +618,6 @@ class GCodeGenerator:
         lines += [f"G0 Z{self.z_up:.2f}", "G0 X0.000 Y0.000", "M2"]
         return "\n".join(lines)
 
-
-# ══════════════════════════════════════════════
-#  5 — TOOLPATH RENDERER
-# ══════════════════════════════════════════════
 
 class ToolpathRenderer:
     BG = "#0a0a0a"; STROKE = "#4ecdc4"; TRAVEL = "#2a2a2a"
@@ -680,10 +677,6 @@ class ToolpathRenderer:
             t += dash; on = not on
 
 
-# ══════════════════════════════════════════════
-#  PIPELINE
-# ══════════════════════════════════════════════
-
 def run_pipeline(pil_img, board_w, board_h, margin,
                  feed_rate, z_up, z_down, canny_low, canny_high, min_points):
     bgr      = ImageProcessor.pil_to_bgr(pil_img)
@@ -713,6 +706,30 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── ESP32 Connection ──────────────────────
+    st.markdown('<div class="section-label">▸ ESP32 Connection</div>', unsafe_allow_html=True)
+
+    esp_ip   = st.text_input("ESP32 IP Address", value=st.session_state.esp32_ip,
+                              placeholder="192.168.1.100", key="esp_ip_input")
+    esp_port = st.number_input("Port", min_value=1, max_value=65535, value=80, step=1)
+
+    # Status indicator
+    status = st.session_state.esp32_status
+    if status == "online":
+        st.markdown('<div class="status-dot-online">● ONLINE — ESP32 reachable</div>', unsafe_allow_html=True)
+    elif status == "offline":
+        st.markdown('<div class="status-dot-offline">● OFFLINE — Cannot reach ESP32</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="status-dot-unknown">● NOT CHECKED</div>', unsafe_allow_html=True)
+
+    if st.button("⬡  PING ESP32", key="btn_ping"):
+        st.session_state.esp32_ip = esp_ip
+        with st.spinner("Pinging…"):
+            ok, msg = ping_esp32(esp_ip, int(esp_port))
+        st.session_state.esp32_status = "online" if ok else "offline"
+        st.rerun()
+
+    # ── Machine Settings ──────────────────────
     st.markdown('<div class="section-label">▸ Board (mm)</div>', unsafe_allow_html=True)
     board_w = st.number_input("Width",  min_value=10, max_value=2000, value=200, step=10)
     board_h = st.number_input("Height", min_value=10, max_value=2000, value=150, step=10)
@@ -737,7 +754,7 @@ with st.sidebar:
 
     st.markdown(
         '<p style="font-size:10px;color:#555550;font-family:JetBrains Mono,monospace;">'
-        'LINEFORGE v2.0<br>Image → Contours → G-code</p>',
+        'LINEFORGE v2.0<br>Image → Contours → G-code → ESP32</p>',
         unsafe_allow_html=True
     )
 
@@ -749,7 +766,7 @@ with st.sidebar:
 st.markdown("""
 <div class="title-block">
     <h1>LINEFORGE</h1>
-    <span class="sub">Image → Grayscale → Edges → Contours → G-code</span>
+    <span class="sub">Image → Grayscale → Edges → Contours → G-code → ESP32</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -794,48 +811,109 @@ if uploaded:
                     int(feed_rate), float(z_up), float(z_down),
                     int(canny_low), int(canny_high), int(min_points)
                 )
-                n_contours  = len(scaled)
-                n_points    = sum(len(c) for c in scaled)
-                gcode_lines = gcode.count("\n") + 1
-
-                c1, c2, c3, c4 = st.columns(4)
-                for col, label, val in [
-                    (c1, "Contours",     str(n_contours)),
-                    (c2, "Total Points", str(n_points)),
-                    (c3, "G-code Lines", str(gcode_lines)),
-                    (c4, "Board (mm)",   f"{board_w}×{board_h}"),
-                ]:
-                    col.markdown(f"""
-                    <div class="stat-box">
-                        <div class="label">{label}</div>
-                        <div class="value">{val}</div>
-                    </div>""", unsafe_allow_html=True)
-
-                st.markdown("<br>", unsafe_allow_html=True)
-                col_tp, col_gc = st.columns([1, 1])
-
-                with col_tp:
-                    st.markdown('<div class="panel-header"><span style="color:#4ecdc4">●</span> Toolpath Preview</div>', unsafe_allow_html=True)
-                    st.image(preview, use_container_width=True)
-                    st.markdown('<div class="panel-header" style="margin-top:16px"><span style="color:#e8c547">●</span> Edge Detection</div>', unsafe_allow_html=True)
-                    st.image(cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB), use_container_width=True)
-
-                with col_gc:
-                    st.markdown('<div class="panel-header"><span style="color:#7ec893">●</span> G-code Output</div>', unsafe_allow_html=True)
-                    preview_lines = "\n".join(gcode.split("\n")[:120])
-                    if gcode_lines > 120:
-                        preview_lines += f"\n\n; ... ({gcode_lines - 120} more lines) ..."
-                    st.markdown(f'<div class="gcode-block">{preview_lines}</div>', unsafe_allow_html=True)
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.download_button(
-                        label="💾  Download G-code",
-                        data=gcode,
-                        file_name=f"lineforge_{uploaded.name.rsplit('.',1)[0]}.gcode",
-                        mime="text/plain",
-                    )
+                st.session_state["last_gcode"]   = gcode
+                st.session_state["last_preview"] = preview
+                st.session_state["last_edges"]   = edges
+                st.session_state["last_scaled"]  = scaled
 
             except Exception as ex:
                 st.error(f"Pipeline error: {ex}")
+                st.stop()
+
+    # ── Show results if pipeline has been run ─
+    if "last_gcode" in st.session_state:
+        gcode   = st.session_state["last_gcode"]
+        preview = st.session_state["last_preview"]
+        edges   = st.session_state["last_edges"]
+        scaled  = st.session_state["last_scaled"]
+
+        n_contours  = len(scaled)
+        n_points    = sum(len(c) for c in scaled)
+        gcode_lines = gcode.count("\n") + 1
+
+        c1, c2, c3, c4 = st.columns(4)
+        for col, label, val in [
+            (c1, "Contours",     str(n_contours)),
+            (c2, "Total Points", str(n_points)),
+            (c3, "G-code Lines", str(gcode_lines)),
+            (c4, "Board (mm)",   f"{board_w}×{board_h}"),
+        ]:
+            col.markdown(f"""
+            <div class="stat-box">
+                <div class="label">{label}</div>
+                <div class="value">{val}</div>
+            </div>""", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_tp, col_gc = st.columns([1, 1])
+
+        with col_tp:
+            st.markdown('<div class="panel-header"><span style="color:#4ecdc4">●</span> Toolpath Preview</div>', unsafe_allow_html=True)
+            st.image(preview, use_container_width=True)
+            st.markdown('<div class="panel-header" style="margin-top:16px"><span style="color:#e8c547">●</span> Edge Detection</div>', unsafe_allow_html=True)
+            st.image(cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB), use_container_width=True)
+
+        with col_gc:
+            st.markdown('<div class="panel-header"><span style="color:#7ec893">●</span> G-code Output</div>', unsafe_allow_html=True)
+            preview_lines = "\n".join(gcode.split("\n")[:120])
+            if gcode_lines > 120:
+                preview_lines += f"\n\n; ... ({gcode_lines - 120} more lines) ..."
+            st.markdown(f'<div class="gcode-block">{preview_lines}</div>', unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── Download ──────────────────────
+            st.download_button(
+                label="💾  Download G-code",
+                data=gcode,
+                file_name=f"lineforge_{uploaded.name.rsplit('.',1)[0]}.gcode",
+                mime="text/plain",
+            )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── ESP32 Send Panel ──────────────
+            st.markdown("""
+            <div class="panel-header">
+                <span style="color:#4ecdc4">●</span> Send to ESP32
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class="esp32-panel">
+                <div class="label">▸ HARDWARE TARGET</div>
+                <div style="font-size:12px;color:#e0dfd8;margin-bottom:6px;">
+                    Target: <span style="color:#e8c547;">{st.session_state.esp32_ip}:{int(esp_port)}</span>
+                </div>
+                <div style="font-size:11px;color:#555550;">
+                    {n_contours} contours · {n_points} points · {gcode_lines} lines
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("<div class='send-btn'>", unsafe_allow_html=True)
+            send_clicked = st.button("⬡  SEND TO ESP32 — START DRAWING", key="btn_send_esp32")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            if send_clicked:
+                st.session_state.esp32_ip = esp_ip
+                with st.spinner(f"Sending {gcode_lines} lines to ESP32 at {esp_ip}…"):
+                    ok, msg = send_gcode_to_esp32(esp_ip, gcode, int(esp_port))
+                if ok:
+                    st.success(f"✓  ESP32 acknowledged: {msg}")
+                else:
+                    st.error(f"✗  Failed: {msg}")
+                    st.markdown("""
+                    <div style="font-size:11px;color:#555550;font-family:'JetBrains Mono',monospace;
+                                padding:10px;background:#100a0a;border:1px solid #2a1a1a;border-radius:2px;margin-top:8px;">
+                        Troubleshooting:<br>
+                        • Make sure ESP32 and this device are on the same WiFi<br>
+                        • Check IP address in sidebar matches your ESP32<br>
+                        • Use PING button to verify connection first<br>
+                        • Confirm esp32_lineforge.ino is flashed on the device
+                    </div>
+                    """, unsafe_allow_html=True)
 
 else:
     st.markdown("""
